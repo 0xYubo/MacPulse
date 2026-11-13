@@ -78,7 +78,21 @@ struct DiskCleanupView: View {
             Banner(symbol: "exclamationmark.triangle", text: warning, tint: .orange)
         }
         if cleanup.diskUnreadableCount > 0 {
-            Banner(symbol: "exclamationmark.triangle", text: "\(cleanup.diskUnreadableCount) 个条目无权限读取，大小可能偏小", tint: .orange)
+            HStack(spacing: 6) {
+                Banner(
+                    symbol: "lock.trianglebadge.exclamationmark",
+                    text: "\(cleanup.diskUnreadableCount) 个文件没有读取权限，未计入大小",
+                    tint: .orange
+                )
+                // macOS 不允许应用自行申请完全磁盘访问权限，只能引导用户去系统设置里勾选。
+                Button("去授权") {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                .controlSize(.mini)
+                .help("在「隐私与安全性 → 完全磁盘访问权限」中加入 MacPulse")
+            }
         }
         if let scannedAt = cleanup.diskScannedAt, cleanup.diskState == .loaded {
             Text("上次扫描 \(scannedAt.formatted(date: .omitted, time: .shortened))")
@@ -134,7 +148,6 @@ struct DiskCleanupView: View {
                         )
                         ForEach(rows) { item in
                             CleanupItemRow(item: item, isSelected: selectionBinding(item))
-                            if item.id != rows.last?.id { Divider().padding(.leading, 36) }
                         }
                     }
                 }
@@ -164,49 +177,6 @@ struct DiskCleanupView: View {
         if userFiles > 0 { lines.append("其中 \(userFiles) 项是下载或桌面中的用户文件。") }
         lines.append("删除前会再次检查是否正在使用。清空废纸篓后才会真正释放空间。")
         return lines.joined(separator: "\n")
-    }
-}
-
-struct Banner: View {
-    let symbol: String
-    let text: String
-    let tint: Color
-
-    var body: some View {
-        Label(text, systemImage: symbol)
-            .font(.system(size: 9.5))
-            .foregroundStyle(tint)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 5)
-    }
-}
-
-/// 危险操作按钮：执行期间显示进度，避免用户以为没有响应。
-struct TrashButton: View {
-    let title: String
-    let isBusy: Bool
-    var prominent = false
-    let action: () -> Void
-
-    var body: some View {
-        let button = Button(action: action) {
-            if isBusy {
-                HStack(spacing: 5) {
-                    ProgressView().controlSize(.mini)
-                    Text("正在移动…")
-                }
-            } else {
-                Text(title)
-            }
-        }
-        .controlSize(.small)
-        .tint(.red)
-        if prominent {
-            button.buttonStyle(.borderedProminent)
-        } else {
-            button.buttonStyle(.bordered)
-        }
     }
 }
 

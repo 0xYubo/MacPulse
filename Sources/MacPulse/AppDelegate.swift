@@ -9,6 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let popover = NSPopover()
     private let model = MonitorModel()
     private let cleanup = CleanupModel()
+    private let docker = DockerModel()
+    private let diagnostics = DiagnosticsModel()
     private var timer: Timer?
     private var outsideClickMonitor: Any?
     private var singleInstanceLockFD: Int32 = -1
@@ -43,6 +45,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         if model.pressureAlertsEnabled { model.requestNotificationAuthorization() }
         model.refresh()
+        // 诊断报告启动时读一次，标签上的提醒点才有依据；之后在诊断页按需刷新。
+        diagnostics.refresh()
         scheduleTimer(interval: 15)
         Timer.scheduledTimer(
             timeInterval: 0.8,
@@ -79,7 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.contentSize = NSSize(width: model.dashboardWidth, height: model.dashboardHeight)
         popover.delegate = self
         popover.contentViewController = NSHostingController(
-            rootView: DashboardView(model: model, cleanup: cleanup, quit: { NSApp.terminate(nil) })
+            rootView: DashboardView(model: model, cleanup: cleanup, docker: docker, diagnostics: diagnostics, quit: { NSApp.terminate(nil) })
         )
     }
 
@@ -155,7 +159,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     /// 菜单栏数字仍是 CPU；内存压力偏高 / 紧张时图标换成内存芯片并着橙 / 红色，面板收起时也能看到。
     private func updateStatusTitle(_ snapshot: SystemSnapshot) {
         guard let button = statusItem.button else { return }
-        button.title = String(format: " %.0f%%", model.displayCPU?.totalPercent ?? snapshot.cpuPercent)
+        let cpu = String(format: "%.0f%%", model.displayCPU?.totalPercent ?? snapshot.cpuPercent)
+        let memory = String(format: "%.0f%%", snapshot.memoryPercent)
+        switch model.menuBarDisplay {
+        case .cpu: button.title = " \(cpu)"
+        case .memory: button.title = " \(memory)"
+        case .both: button.title = " \(cpu) · \(memory)"
+        case .icon: button.title = ""
+        }
         let pressure = snapshot.memoryPressure ?? .normal
         let symbol = pressure == .normal ? "waveform.path.ecg" : "memorychip"
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "MacPulse")

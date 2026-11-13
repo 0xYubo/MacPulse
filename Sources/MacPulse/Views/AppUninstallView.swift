@@ -70,7 +70,6 @@ struct AppUninstallView: View {
                 } else {
                     ForEach(apps) { app in
                         AppRow(app: app, isRunning: cleanup.runningReason(for: app) != nil) { cleanup.select(app) }
-                        if app.id != apps.last?.id { Divider().padding(.leading, 43) }
                     }
                 }
             }

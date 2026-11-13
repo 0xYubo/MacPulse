@@ -18,6 +18,20 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum MenuBarDisplay: String, CaseIterable, Identifiable {
+    case cpu, memory, both, icon
+
+    var id: Self { self }
+    var label: String {
+        switch self {
+        case .cpu: "CPU"
+        case .memory: "内存"
+        case .both: "两者"
+        case .icon: "仅图标"
+        }
+    }
+}
+
 @MainActor
 final class MonitorModel: ObservableObject {
     struct PortItem: Identifiable {
@@ -62,6 +76,27 @@ final class MonitorModel: ObservableObject {
             if pressureAlertsEnabled { requestNotificationAuthorization() }
         }
     }
+    /// 单组应用内存超限提醒：比系统压力变红更早发现失控的进程组（例如 9 个 jest worker 合计 20GB+）。
+    @Published var groupAlertsEnabled: Bool {
+        didSet {
+            defaults.set(groupAlertsEnabled, forKey: Keys.groupAlerts)
+            if groupAlertsEnabled { requestNotificationAuthorization() }
+        }
+    }
+    @Published var groupAlertThresholdGB: Double {
+        didSet {
+            defaults.set(groupAlertThresholdGB, forKey: Keys.groupThreshold)
+            groupAlertTracker = GroupMemoryAlertTracker(thresholdBytes: Self.bytes(gigabytes: groupAlertThresholdGB))
+        }
+    }
+    /// 当前超过阈值的应用组，用于资源页顶部提示。
+    @Published private(set) var oversizedGroups: [ProcessGroup] = []
+    @Published var menuBarDisplay: MenuBarDisplay {
+        didSet {
+            defaults.set(menuBarDisplay.rawValue, forKey: Keys.menuBarDisplay)
+            snapshot.map { didUpdate?($0) }
+        }
+    }
     @Published var appearanceMode: AppearanceMode {
         didSet { defaults.set(appearanceMode.rawValue, forKey: Keys.appearance) }
     }
@@ -81,6 +116,7 @@ final class MonitorModel: ObservableObject {
     private var historyBuffer = CPUHistoryBuffer(capacity: 80)
     private var memoryHistoryBuffer = MemoryHistoryBuffer(capacity: 80)
     private var pressureAlertTracker = PressureAlertTracker(threshold: .critical)
+    private var groupAlertTracker: GroupMemoryAlertTracker
     private var cpuSmoother = CPUSmoother(window: 3)
 
     private enum Keys {
@@ -89,12 +125,20 @@ final class MonitorModel: ObservableObject {
         static let dashboardWidth = "dashboardWidth"
         static let dashboardHeight = "dashboardHeight"
         static let pressureAlerts = "memoryPressureAlerts"
+        static let groupAlerts = "groupMemoryAlerts"
+        static let groupThreshold = "groupMemoryThresholdGB"
+        static let menuBarDisplay = "menuBarDisplay"
     }
 
     init() {
         autoClosePortsEnabled = defaults.bool(forKey: Keys.autoClose)
         appearanceMode = AppearanceMode(rawValue: defaults.string(forKey: Keys.appearance) ?? "") ?? .system
         pressureAlertsEnabled = defaults.object(forKey: Keys.pressureAlerts) as? Bool ?? true
+        groupAlertsEnabled = defaults.object(forKey: Keys.groupAlerts) as? Bool ?? true
+        let threshold = defaults.object(forKey: Keys.groupThreshold) as? Double ?? 6
+        groupAlertThresholdGB = threshold
+        groupAlertTracker = GroupMemoryAlertTracker(thresholdBytes: Self.bytes(gigabytes: threshold))
+        menuBarDisplay = MenuBarDisplay(rawValue: defaults.string(forKey: Keys.menuBarDisplay) ?? "") ?? .cpu
         let savedWidth = defaults.double(forKey: Keys.dashboardWidth)
         let savedHeight = defaults.double(forKey: Keys.dashboardHeight)
         dashboardWidth = savedWidth > 0 ? min(max(savedWidth, 400), 600) : 440
@@ -153,6 +197,7 @@ final class MonitorModel: ObservableObject {
                 ))
                 memoryHistory = memoryHistoryBuffer.samples
                 notifyIfPressureRose(value.memoryPressure)
+                checkGroupMemory(value)
                 updateIdleTracking(value)
                 rebuildPorts(result.1.successValue ?? [])
                 didUpdate?(value)
@@ -257,21 +302,53 @@ final class MonitorModel: ObservableObject {
             return
         }
         let top = topMemoryGroups().map { "\($0.name) \(ByteCountFormatter.string(fromByteCount: Int64($0.memoryBytes), countStyle: .memory))" }
+        postNotification(
+            id: "memory-pressure",
+            title: "内存压力\(level.label)",
+            body: top.isEmpty
+                ? "系统可能变慢，建议关闭不用的应用。"
+                : "占用最多：\(top.joined(separator: "、"))。建议关闭不用的应用或停止测试、容器。"
+        )
+    }
+
+    private func checkGroupMemory(_ snapshot: SystemSnapshot) {
+        let threshold = Self.bytes(gigabytes: groupAlertThresholdGB)
+        oversizedGroups = snapshot.groups.filter { $0.memoryBytes >= threshold }.sorted { $0.memoryBytes > $1.memoryBytes }
+        // 关闭提醒时也持续更新追踪状态，否则重新打开的瞬间会把早已超限的组当成新事件。
+        let fresh = groupAlertTracker.update(snapshot.groups.map { ($0.name, $0.memoryBytes) })
+        guard groupAlertsEnabled, !fresh.isEmpty else { return }
+        let names = fresh.map { "\($0.name) \(ByteCountFormatter.string(fromByteCount: Int64($0.bytes), countStyle: .memory))" }
+        guard Self.notificationsAvailable else {
+            notice = "内存占用过高：\(names.joined(separator: "、"))"
+            return
+        }
+        postNotification(
+            id: "group-memory-\(fresh[0].name)",
+            title: "内存占用过高",
+            body: "\(names.joined(separator: "、")) 超过 \(Self.thresholdLabel(groupAlertThresholdGB))。可在 MacPulse 资源页结束它。"
+        )
+    }
+
+    private func postNotification(id: String, title: String, body: String) {
         let content = UNMutableNotificationContent()
-        content.title = "内存压力\(level.label)"
-        content.body = top.isEmpty
-            ? "系统可能变慢，建议关闭不用的应用。"
-            : "占用最多：\(top.joined(separator: "、"))。建议关闭不用的应用或停止测试、容器。"
+        content.title = title
+        content.body = body
         content.sound = .default
-        let request = UNNotificationRequest(identifier: "memory-pressure", content: content, trigger: nil)
+        let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
         // 用 async 接口：回调版本在后台队列执行，而本类隔离在主线程，Swift 6 运行时会直接断言崩溃。
         Task {
             do {
                 try await UNUserNotificationCenter.current().add(request)
             } catch {
-                notice = "内存紧张通知发送失败：\(error.localizedDescription)"
+                notice = "通知发送失败：\(error.localizedDescription)"
             }
         }
+    }
+
+    static func bytes(gigabytes: Double) -> UInt64 { UInt64(gigabytes * 1_073_741_824) }
+
+    static func thresholdLabel(_ gigabytes: Double) -> String {
+        gigabytes.rounded() == gigabytes ? "\(Int(gigabytes)) GB" : String(format: "%.1f GB", gigabytes)
     }
 
     /// 不在 .app 包内运行（如 `swift run`）时没有 bundle id，调用通知中心会直接崩溃。

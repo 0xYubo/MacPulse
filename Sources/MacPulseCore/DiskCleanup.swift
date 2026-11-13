@@ -155,7 +155,8 @@ public struct DiskCleanupScanner: Sendable {
     ]
 
     /// ~/Library/Caches 下名为缓存、实际存放不可重建数据的目录，不列为候选。
-    static let nonCacheDirectoryNames: Set<String> = ["pypoetry", "cloudkit"]
+    /// 名字不带 com.apple. 前缀的 Apple 系统缓存（地图、iCloud 等），由系统自行管理，不列为清理项。
+    static let nonCacheDirectoryNames: Set<String> = ["pypoetry", "cloudkit", "geoservices", "familycircle", "passkit", "storedownload"]
     /// 可以删除、但重建代价高（需重新下载浏览器、重建索引）的目录，默认不勾选。
     static let expensiveCacheNotes: [String: String] = [
         "ms-playwright": "Playwright 浏览器，删除后需重新下载",

@@ -120,3 +120,25 @@ public struct PressureAlertTracker: Sendable {
         return pressure
     }
 }
+
+/// 单组应用（同名进程合计）内存超过阈值时提醒。
+/// 比等系统压力变红更早：例如 9 个 jest worker 合计 22GB 时，单组超限就能先报出来。
+/// 每组超限只提醒一次，回落到阈值的 80% 以下才重新计数，避免在阈值附近来回抖动反复提醒。
+public struct GroupMemoryAlertTracker: Sendable {
+    public let thresholdBytes: UInt64
+    private var alerted: Set<String> = []
+
+    public init(thresholdBytes: UInt64) {
+        self.thresholdBytes = thresholdBytes
+    }
+
+    /// 返回本次新超限的组（按占用从大到小）。
+    public mutating func update(_ usage: [(name: String, bytes: UInt64)]) -> [(name: String, bytes: UInt64)] {
+        let resetLine = thresholdBytes / 5 * 4
+        let current = Dictionary(usage.map { ($0.name, $0.bytes) }, uniquingKeysWith: max)
+        alerted = alerted.filter { (current[$0] ?? 0) >= resetLine }
+        let fresh = usage.filter { $0.bytes >= thresholdBytes && !alerted.contains($0.name) }
+        fresh.forEach { alerted.insert($0.name) }
+        return fresh.sorted { $0.bytes > $1.bytes }
+    }
+}

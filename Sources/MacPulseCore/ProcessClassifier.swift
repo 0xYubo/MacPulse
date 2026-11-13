@@ -115,6 +115,20 @@ public struct ProcessClassifier: Sendable {
             return "SSH 反向隧道"
         }
 
+        // 测试 runner 会派生多个 worker（jest 默认「核数 − 1」个），归成一组才看得出合计占用。
+        if lowerCommand.contains("jest-worker") || lowerCommand.contains("/jest/bin/jest") || lowerCommand.contains("vitest") {
+            return "测试 · \(projectComponent(in: command) ?? "JavaScript")"
+        }
+
+        if lowerCommand.contains("pytest") || lowerCommand.contains("xdist") {
+            return "测试 · \(projectComponent(in: command) ?? "Python")"
+        }
+
+        // Docker Desktop、OrbStack 等的 Linux 虚拟机都跑在 Virtualization.framework 里，进程名是一长串 bundle id。
+        if lowerCommand.contains("virtualization.virtualmachine") {
+            return "虚拟机（Docker 等）"
+        }
+
         if lowerCommand.contains("gunicorn") {
             return "Gunicorn · \(projectComponent(in: command) ?? "后端服务")"
         }

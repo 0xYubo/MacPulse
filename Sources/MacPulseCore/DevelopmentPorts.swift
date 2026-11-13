@@ -18,6 +18,26 @@ public struct ListeningSocket: Identifiable, Hashable, Sendable {
     }
 }
 
+/// 监听地址是否对其他机器开放，以及端口是否属于常见的数据库 / 中间件。
+/// 数据库监听在所有网卡上时，同一局域网的人可以直接连接，值得提醒。
+public enum PortExposure {
+    public static func isExposed(address: String) -> Bool {
+        ["*", "0.0.0.0", "[::]", "::"].contains(address)
+    }
+
+    public static let sensitiveServices: [Int: String] = [
+        1433: "SQL Server", 2375: "Docker API", 3306: "MySQL", 5432: "PostgreSQL",
+        5672: "RabbitMQ", 6379: "Redis", 9200: "Elasticsearch", 11211: "Memcached",
+        27017: "MongoDB",
+    ]
+
+    /// 对外开放的敏感服务名；不对外或不是已知服务时返回 nil。
+    public static func exposedSensitiveService(port: Int, address: String) -> String? {
+        guard isExposed(address: address) else { return nil }
+        return sensitiveServices[port]
+    }
+}
+
 public struct DevelopmentPortPolicy: Sendable {
     public let minimumIdleDuration: TimeInterval
 
@@ -83,7 +103,12 @@ public struct PortScanner: Sendable {
                 continue
             }
         }
-        return result.sorted { ($0.port, $0.pid) < ($1.port, $1.pid) }
+        // 同一进程常同时监听 IPv4 与 IPv6（lsof 两行都显示为 `*:端口`），标识完全相同；
+        // 不去重时 SwiftUI 列表遇到重复 id 会渲染出空白行。
+        var seen = Set<String>()
+        return result
+            .filter { seen.insert($0.id).inserted }
+            .sorted { ($0.port, $0.pid) < ($1.port, $1.pid) }
     }
 
     public static func propagateActiveConnections(
